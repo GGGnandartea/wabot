@@ -28,3 +28,4 @@ npx pm2 save
 ```
 
 Lalu buka Web Dashboard di `http://IP_VPS_ANDA:3000` untuk Scan QR Code dan mengatur Gemini API Key.
+
