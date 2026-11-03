@@ -1,0 +1,9 @@
+node_modules/
+.env
+data/auth_info/
+data/config.json
+data/group_chats.json
+data/saved_notes.json
+data/saved_docs/
+*.zip
+*.log

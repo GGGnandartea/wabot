@@ -1,0 +1,20 @@
+{
+  "name": "wabotai",
+  "version": "1.0.0",
+  "description": "WhatsApp Group AI Bot with Gemini API, Group Chat Search & Web Dashboard",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@google/genai": "^2.32.0",
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "dotenv": "^17.3.2",
+    "express": "^5.2.1",
+    "pino": "^10.3.1",
+    "qrcode": "^1.5.4",
+    "sharp": "^0.35.5"
+  }
+}
