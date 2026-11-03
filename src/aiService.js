@@ -16,10 +16,10 @@ function formatMessageLine(m) {
 function formatSavedNoteLine(n) {
   let docTag = '';
   if (n.fileInfo?.originalName) {
-    const loc = n.fileInfo.driveFileId ? 'Google Drive' : 'Server Lokal';
-    docTag = ` [Lampiran File (${loc}): "${n.fileInfo.originalName}"]`;
+    const jenis = n.fileInfo.mediaType === 'image' ? 'Foto' : 'Dokumen';
+    docTag = ` [Memiliki Lampiran ${jenis} yang BISA dikirim langsung oleh bot]`;
   }
-  return `[ID #${n.id}] (${n.category.toUpperCase()} - Disimpan oleh ${n.savedBy} pada ${n.formattedTime})${docTag}\nJudul: ${n.title}\nIsi: ${n.content}`;
+  return `[#${n.id}] Nama Catatan: "${n.title}" (Disimpan oleh ${n.savedBy} pada ${n.formattedTime})${docTag}\nIsi/Keterangan: ${n.content}`;
 }
 
 /**
@@ -214,6 +214,7 @@ export async function generateGroupAIReply({
   quotedText = '',
   quotedSender = '',
   noteActionInfo = '',
+  sendingFileNote = null,
   onFallbackLog = null
 }) {
   const config = getConfig();
@@ -270,21 +271,27 @@ export async function generateGroupAIReply({
 
   let actionSection = '';
   if (noteActionInfo) {
-    actionSection = `\n=== STATUS AKSI PENYIMPANAN CATATAN / FILE BARU SAJA ===\n${noteActionInfo}\n(Konfirmasikan kepada penanya bahwa aksi tersebut sudah berhasil dilakukan!)\n`;
+    actionSection = `\n=== STATUS PENYIMPANAN / PENGHAPUSAN CATATAN ===\n${noteActionInfo}\n`;
+  }
+
+  let sendingFileSection = '';
+  if (sendingFileNote) {
+    sendingFileSection = `\n=== 📤 PENGIRIMAN FILE / FOTO OTOMATIS ===\nSistem bot SAAT INI SEDANG MENGIRIMKAN file/foto asli dari catatan "${sendingFileNote.title}" secara langsung bersama balasan ini ke grup WhatsApp!\n- JANGAN PERNAH mengatakan kamu tidak bisa mengirim file/foto karena keterbatasan fitur!\n- Cukup sampaikan dengan ramah, singkat, dan natural bahwa ini file/catatan *${sendingFileNote.title}* yang diminta.\n`;
   }
 
   const nowStr = formatTimestamp(Date.now());
   const fullUserPrompt = `Waktu Sekarang: ${nowStr} WIB
 Nama Grup WhatsApp: ${contextData.groupName || groupName || 'Grup Pribadi'}
-${externalInfoSection}${savedNotesSection}${historyPromptSection}${quotedSection}${actionSection}
+${externalInfoSection}${savedNotesSection}${historyPromptSection}${quotedSection}${actionSection}${sendingFileSection}
 === PERTANYAAN / PERINTAH SAAT INI ===
 Penanya: ${senderName || 'Anggota'}
 Pesan: ${question || '(Menyebut bot tanpa teks tambahan)'}
 
-Instruksi Tambahan:
-- Jika terdapat [🌐 DATA REAL-TIME DARI INTERNET (CUACA / KURS / BERITA / WIKIPEDIA)], WAJIB gunakan data real-time tersebut untuk menjawab pertanyaan pengguna dengan lengkap, jelas, dan rapi!
-- Jika terdapat [STATUS AKSI PENYIMPANAN CATATAN / FILE BARU SAJA], sampaikan konfirmasi bahwa aksi tersebut sudah berhasil dilakukan.
-- Jika penanya menanyakan jadwal, dokumen, file, atau chat yang pernah di-save/disimpan, utamakan mengambil data dari bagian [📌 CATATAN, JADWAL & FILE PENTING TERSIMPAN PERMANEN].`;
+Instruksi Penting:
+- Jawab secara natural, luwes, dan singkat seperti asisten manusia (JANGAN pernah menulis kalimat kaku seperti "sudah berhasil dilakukan oleh sistem" atau "judul: 📌 Catatan:").
+- Jika baru saja menyimpan catatan/file, cukup sebutkan nama catatannya secara singkat (contoh: "Siap ${senderName || ''}, sudah saya simpan dengan nama *...* ya! ✅").
+- Jika terdapat [📤 PENGIRIMAN FILE / FOTO OTOMATIS], file/foto fisiknya sedang dikirimkan bersama pesanmu ini, jadi langsung katakan bahwa ini file/foto yang diminta.
+- Jika terdapat [🌐 DATA REAL-TIME DARI INTERNET], gunakan data real-time tersebut untuk menjawab pertanyaan cuaca, kurs, berita, atau pengetahuan umum.`;
 
   const result = await generateWithFallback({
     systemPrompt: config.systemPrompt,

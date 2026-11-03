@@ -98,9 +98,9 @@ app.post('/api/config', (req, res) => {
   try {
     const body = req.body || {};
     const customPrefixes = Array.isArray(body.customPrefixes)
-      ? body.customPrefixes
-      : String(body.customPrefixes || '@bot, !ai, /ai')
-          .split(',')
+      ? body.customPrefixes.flatMap((s) => String(s || '').split(/[,;\s]+/)).filter(Boolean)
+      : String(body.customPrefixes || '@bot, !ai, /ai, ai')
+          .split(/[,;\s]+/)
           .map((s) => s.trim())
           .filter(Boolean);
 
@@ -196,17 +196,18 @@ app.post('/api/ask-test', async (req, res) => {
       const savedNote = addSavedNote({
         groupId: groupId || 'global',
         groupName: gName,
+        title: noteCmd.titleToSave,
         content: noteCmd.contentToSave,
         savedBy: senderName || 'Admin (Dashboard)'
       });
-      noteActionInfo = `BERHASIL DISIMPAN PERMANEN: ID #${savedNote.id} - Judul: ${savedNote.title} - Isi: "${savedNote.content}"`;
-      addActivityLog('save', `📌 Catatan Permanen #${savedNote.id} Disimpan`, savedNote.title);
+      noteActionInfo = `Catatan baru saja disimpan dengan nama "${savedNote.title}". Cukup konfirmasikan singkat dan natural bahwa sudah disimpan dengan nama *${savedNote.title}*.`;
+      addActivityLog('save', `📌 Disimpan #${savedNote.id}: ${savedNote.title}`, savedNote.title);
       emitStatusUpdate();
     } else if (noteCmd.action === 'delete') {
       const deleted = await deleteSavedNoteByQuery(groupId || 'global', noteCmd.targetQuery);
       if (deleted) {
-        noteActionInfo = `BERHASIL DIHAPUS DARI PENYIMPANAN PERMANEN: ID #${deleted.id} (${deleted.title})`;
-        addActivityLog('info', `🗑️ Catatan Permanen #${deleted.id} Dihapus`, deleted.title);
+        noteActionInfo = `Catatan "${deleted.title}" (#${deleted.id}) sudah berhasil dihapus. Sampaikan singkat dan natural bahwa *${deleted.title}* sudah dihapus.`;
+        addActivityLog('info', `🗑️ Dihapus #${deleted.id}: ${deleted.title}`, deleted.title);
         emitStatusUpdate();
       }
     }

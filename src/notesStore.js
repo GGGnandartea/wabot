@@ -23,18 +23,121 @@ let notesData = {
   notes: []
 };
 
+/**
+ * Strips bot greeting or command prefixes from a note title/content so titles look realistic
+ * e.g. "🖼️ Foto: tolong bantu save file ini judulnya jadwal dinas Nandar" -> "jadwal dinas Nandar"
+ */
+export function cleanRealisticNoteTitle(rawText = '', fileInfo = null) {
+  let s = String(rawText || '').trim();
+
+  // Remove old emoji prefixes if present
+  s = s.replace(/^(?:📌\s*Catatan|🖼️\s*Foto|📅\s*Jadwal|📄\s*File|📄\s*Dokumen)\s*:\s*/i, '').trim();
+
+  // Remove bot greeting if user accidentally quoted a bot message
+  s = s
+    .replace(/^Halo[^!\n]*!\s*Saya\s+[a-zA-Z0-9_-]+\s+siap\s+membantu\.?\s*/i, '')
+    .replace(/^Saya\s+[a-zA-Z0-9_-]+\s+siap\s+membantu\.?\s*/i, '')
+    .trim();
+
+  // 1. If text explicitly contains "judulnya ...", "kasih judul ...", "namanya ...", "kasih nama ...", "dengan judul ..."
+  const explicitTitleMatch = s.match(
+    /\b(?:judul(?:nya)?|nama(?:nya)?|kasih\s+(?:judul|nama)|beri\s+(?:judul|nama)|dengan\s+(?:judul|nama))\s*[:=-]?\s*([^\n]+)$/i
+  );
+  if (explicitTitleMatch && explicitTitleMatch[1]) {
+    const extracted = explicitTitleMatch[1]
+      .replace(/[\s.!?]+$/, '')
+      .replace(/^["']|["']$/g, '')
+      .trim();
+    if (extracted.length >= 2) {
+      return extracted;
+    }
+  }
+
+  // 2. Otherwise strip leading save command phrases ("tolong bantu save file ini", "savekan catatan", etc.)
+  s = s
+    .replace(
+      /^(?:halo\s+|hai\s+|ai\s+|@?bot\s+|nanbot\s+)*(?:tolong\s+|bantu\s+|coba\s+|minta\s+)*(?:bantu\s+|tolong\s+)*(?:save\s*kan|save|simpan\s*kan|simpan|catat\s*kan|catat|masukkan\s+ke\s+catatan)\s*(?:file\s+ini|foto\s+ini|gambar\s+ini|dokumen\s+ini|berkas\s+ini|jadwal\s+ini|catatan\s+ini|chat\s+ini|pesan\s+ini|file|foto|gambar|dokumen|berkas|catatan|ini)?\s*(?:ya|dong|deh|nih|bot)?[\s:,-]*/i,
+      ''
+    )
+    .replace(
+      /^(?:judul(?:nya)?|nama(?:nya)?|kasih\s+(?:judul|nama)|beri\s+(?:judul|nama)|dengan\s+(?:judul|nama))\s*[:=-]?\s*/i,
+      ''
+    )
+    .replace(
+      /\s*(?:nanti\s+(?:kalo|kalau)?\s*(?:saya|aku|kita)\s+(?:butuh|tanya|perlu|minta|panggil).*)$/i,
+      ''
+    )
+    .trim();
+
+  let firstLine = s.split('\n')[0].trim();
+  firstLine = firstLine.replace(/^["']|["']$/g, '').trim();
+
+  if (
+    (!firstLine ||
+      firstLine.startsWith('[Dokumen:') ||
+      firstLine.startsWith('(Lampiran')) &&
+    fileInfo?.originalName
+  ) {
+    firstLine = fileInfo.originalName.replace(/\.[^.]+$/, '');
+  }
+
+  if (firstLine.length > 60) {
+    firstLine = firstLine.slice(0, 57).trim() + '...';
+  }
+
+  return firstLine || 'Catatan Penting';
+}
+
+function inferCategoryAndTitle(text, fileInfo, explicitTitle = '') {
+  const combinedLower = `${explicitTitle || ''} ${text || ''}`.toLowerCase();
+  let category = 'catatan';
+  if (fileInfo) {
+    category = fileInfo.mediaType === 'image' ? 'foto' : 'dokumen';
+  } else if (
+    /(jadwal|agenda|meeting|rapat|dinas|shift|jam\s+\d|senin|selasa|rabu|kamis|jumat|sabtu|minggu|tanggal)/i.test(
+      combinedLower
+    )
+  ) {
+    category = 'jadwal';
+  }
+
+  const title = cleanRealisticNoteTitle(explicitTitle || text, fileInfo);
+  return { category, title };
+}
+
 export function loadNotesStore() {
   try {
     if (fs.existsSync(NOTES_FILE)) {
       const raw = fs.readFileSync(NOTES_FILE, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.notes)) {
+        let modified = false;
+        const cleanedNotes = parsed.notes.map((n) => {
+          const cleanedTitle = cleanRealisticNoteTitle(n.title, n.fileInfo);
+          const cleanedContent = cleanRealisticNoteTitle(n.content, n.fileInfo);
+          if (cleanedTitle !== n.title) {
+            modified = true;
+            return {
+              ...n,
+              title: cleanedTitle,
+              content:
+                n.content && n.content.toLowerCase().includes('tolong')
+                  ? cleanedContent
+                  : n.content
+            };
+          }
+          return n;
+        });
+
         notesData = {
           nextId:
             Number(parsed.nextId) ||
-            parsed.notes.reduce((max, n) => Math.max(max, Number(n.id) || 0), 0) + 1,
-          notes: parsed.notes
+            cleanedNotes.reduce((max, n) => Math.max(max, Number(n.id) || 0), 0) + 1,
+          notes: cleanedNotes
         };
+        if (modified) {
+          saveNotesStore();
+        }
       }
     } else {
       saveNotesStore();
@@ -56,39 +159,6 @@ export function saveNotesStore() {
   }
 }
 
-function inferCategoryAndTitle(text, fileInfo) {
-  const lower = (text || '').toLowerCase();
-  let category = 'catatan';
-  if (fileInfo) {
-    category = fileInfo.mediaType === 'image' ? 'foto' : 'dokumen';
-  } else if (
-    /(jadwal|agenda|meeting|rapat|jam\s+\d|senin|selasa|rabu|kamis|jumat|sabtu|minggu|tanggal)/i.test(
-      lower
-    )
-  ) {
-    category = 'jadwal';
-  }
-
-  let cleanLine = (text || '').split('\n')[0].trim();
-  if (cleanLine.length > 60) {
-    cleanLine = cleanLine.slice(0, 57) + '...';
-  }
-  if ((!cleanLine || cleanLine.startsWith('[Dokumen:') || cleanLine.startsWith('(Lampiran')) && fileInfo?.originalName) {
-    cleanLine = fileInfo.originalName;
-  }
-  const prefixLabel =
-    category === 'jadwal'
-      ? '📅 Jadwal'
-      : category === 'foto'
-      ? '🖼️ Foto'
-      : category === 'dokumen'
-      ? '📄 File'
-      : '📌 Catatan';
-  const title = cleanLine ? `${prefixLabel}: ${cleanLine}` : `${prefixLabel} Penting`;
-
-  return { category, title };
-}
-
 export function addSavedNote({
   groupId = 'global',
   groupName = 'Semua Grup',
@@ -100,14 +170,14 @@ export function addSavedNote({
   fileInfo = null
 }) {
   const now = Date.now();
-  const inferred = inferCategoryAndTitle(content, fileInfo);
+  const inferred = inferCategoryAndTitle(content, fileInfo, title);
 
   const note = {
     id: notesData.nextId++,
     groupId: groupId || 'global',
     groupName: groupName || groupId || 'Grup',
-    title: (title || inferred.title).trim(),
-    content: (content || '').trim(),
+    title: inferred.title,
+    content: (content || inferred.title).trim(),
     category: category || inferred.category,
     savedBy: savedBy || 'Anggota',
     originalSender: originalSender || savedBy || 'Anggota',
@@ -178,12 +248,16 @@ export async function deleteSavedNoteByQuery(groupId, queryText = '', quotedText
     }
   }
 
-  // 2. Check if user quoted the exact note content or bot confirmation message
+  // 2. Check if user quoted the exact note content or title
   if (quotedText && quotedText.trim()) {
     const qLower = quotedText.trim().toLowerCase();
     for (const n of groupNotes) {
+      const titleLower = (n.title || '').toLowerCase();
       const contentLower = (n.content || '').toLowerCase();
-      if (contentLower && (qLower.includes(contentLower) || contentLower.includes(qLower))) {
+      if (
+        (titleLower && qLower.includes(titleLower)) ||
+        (contentLower && (qLower.includes(contentLower) || contentLower.includes(qLower)))
+      ) {
         return await deleteSavedNoteById(n.id);
       }
     }
@@ -226,7 +300,6 @@ export async function deleteSavedNoteByQuery(groupId, queryText = '', quotedText
     }
   }
 
-  // 5. If there is only 1 note in the group and user said "hapus catatan/file", delete that single note
   if (groupNotes.length === 1) {
     return await deleteSavedNoteById(groupNotes[0].id);
   }
@@ -235,70 +308,77 @@ export async function deleteSavedNoteByQuery(groupId, queryText = '', quotedText
 }
 
 /**
- * Finds the best matching saved note with an attached file/photo when a user asks the bot to send it back
+ * Finds the best matching saved note with an attached file/photo when a user asks about it
+ * or asks the bot to send/show it
  */
-export function findSavedFileNoteToSend(groupId, queryText = '') {
+export function findSavedFileNoteToSend(groupId, queryText = '', quotedText = '', aiReplyText = '') {
   const notesWithFiles = getSavedNotesForGroup(groupId).filter(
     (n) => n.fileInfo && (n.fileInfo.driveFileId || n.fileInfo.savedFileName)
   );
   if (notesWithFiles.length === 0) return null;
 
-  const q = String(queryText || '').toLowerCase();
+  const qLower = String(queryText || '').toLowerCase().trim();
+  const quotedLower = String(quotedText || '').toLowerCase().trim();
+  const replyLower = String(aiReplyText || '').toLowerCase().trim();
 
-  // 1. Check by explicit ID (#1, #2, etc.)
-  const idMatch = q.match(/#?(\d+)/);
+  const isDirectSendFollowUp =
+    /\b(kirim|kirimin|kirimkan|kesini|ke\s+sini|send|unduh|download|minta|ambil|ambilkan|mana|lihat|tampilkan|bagi)\b/i.test(
+      qLower
+    );
+
+  // 1. Check explicit #ID in queryText, or in quotedText/aiReplyText when user asks for it
+  const idMatch =
+    qLower.match(/(?:#|id\s*#?|nomor\s*)(\d+)/i) ||
+    (isDirectSendFollowUp && quotedLower.match(/(?:#|id\s*#?)(\d+)/i)) ||
+    replyLower.match(/(?:#|id\s*#?)(\d+)/i);
   if (idMatch) {
     const numId = Number(idMatch[1]);
     const byId = notesWithFiles.find((n) => Number(n.id) === numId);
     if (byId) return byId;
   }
 
-  // 2. Check by file type keywords (word/docx, excel/xlsx, pdf, foto/gambar)
-  if (/\b(excel|xlsx|xls|spreadsheet)\b/i.test(q)) {
-    const found = notesWithFiles.find((n) =>
-      /\.(xlsx|xls|csv)$/i.test(n.fileInfo?.originalName || '') ||
-      (n.fileInfo?.mimeType || '').includes('spreadsheet') ||
-      (n.fileInfo?.mimeType || '').includes('excel')
-    );
-    if (found) return found;
-  }
-  if (/\b(word|docx|doc)\b/i.test(q)) {
-    const found = notesWithFiles.find((n) =>
-      /\.(docx|doc)$/i.test(n.fileInfo?.originalName || '') ||
-      (n.fileInfo?.mimeType || '').includes('word')
-    );
-    if (found) return found;
-  }
-  if (/\b(pdf)\b/i.test(q)) {
-    const found = notesWithFiles.find((n) =>
-      /\.pdf$/i.test(n.fileInfo?.originalName || '') ||
-      (n.fileInfo?.mimeType || '').includes('pdf')
-    );
-    if (found) return found;
-  }
-  if (/\b(foto|gambar|image|photo)\b/i.test(q)) {
-    const found = notesWithFiles.find(
-      (n) => n.fileInfo?.mediaType === 'image' || (n.fileInfo?.mimeType || '').startsWith('image/')
-    );
-    if (found) return found;
+  // 2. Check if full note title or original filename appears in queryText, aiReplyText, or (if follow-up) quotedText
+  for (const n of notesWithFiles) {
+    const titleLower = (n.title || '').toLowerCase().trim();
+    const origLower = (n.fileInfo?.originalName || '').toLowerCase().trim();
+    if (titleLower && titleLower.length >= 3) {
+      if (
+        qLower.includes(titleLower) ||
+        replyLower.includes(titleLower) ||
+        (isDirectSendFollowUp && quotedLower.includes(titleLower))
+      ) {
+        return n;
+      }
+    }
+    if (origLower && origLower.length >= 4) {
+      if (
+        qLower.includes(origLower) ||
+        replyLower.includes(origLower) ||
+        (isDirectSendFollowUp && quotedLower.includes(origLower))
+      ) {
+        return n;
+      }
+    }
   }
 
-  // 3. Match by keywords in title, content, or filename
-  const words = q
-    .replace(
-      /\b(tolong|kirim|kirimin|kirimkan|minta|ambil|ambilkan|unduh|download|mana|lihat|file|dokumen|foto|gambar|lampiran|yang|di|save|simpan|tadi|kemarin|dong|ya|bot)\b/gi,
-      ' '
-    )
+  // 3. Match by keywords in queryText (or quotedText if user says "kirim kesini" / "mana" / etc.)
+  const stopWords =
+    /\b(halo|hai|ai|bot|nanbot|tolong|bantu|coba|kirim|kirimin|kirimkan|kesini|ke|sini|send|unduh|download|minta|ambil|ambilkan|mana|lihat|cari|carikan|cek|tampilkan|apa|ya|bisa|saya|aku|kamu|yang|udah|sudah|pernah|di|save|simpan|catat|tadi|kemarin|dong|deh|nih|itu|ini|tersebut)\b/gi;
+
+  const sourceForKeywords = isDirectSendFollowUp ? `${qLower} ${quotedLower}` : qLower;
+  const queryKeywords = sourceForKeywords
+    .replace(stopWords, ' ')
+    .replace(/[^a-z0-9\s]/gi, ' ')
     .split(/\s+/)
     .filter((w) => w.length >= 3);
 
-  if (words.length > 0) {
+  if (queryKeywords.length > 0) {
     let best = null;
     let bestScore = 0;
     for (const n of notesWithFiles) {
-      const hay = `${n.title} ${n.content} ${n.fileInfo?.originalName || ''}`.toLowerCase();
+      const hay = `${n.title} ${n.content} ${n.fileInfo?.originalName || ''} ${n.category || ''}`.toLowerCase();
       let score = 0;
-      for (const w of words) {
+      for (const w of queryKeywords) {
         if (hay.includes(w)) score++;
       }
       if (score > bestScore) {
@@ -309,28 +389,73 @@ export function findSavedFileNoteToSend(groupId, queryText = '') {
     if (best && bestScore > 0) return best;
   }
 
-  // 4. Default to most recent saved file in this group
-  return notesWithFiles[0];
+  // 4. Check by file type keywords (word/docx, excel/xlsx, pdf, foto/gambar) if user is asking for a file
+  if (isDirectSendFollowUp || /\b(file|dokumen|berkas|foto|gambar|catatan|jadwal)\b/i.test(qLower)) {
+    if (/\b(excel|xlsx|xls|spreadsheet)\b/i.test(qLower)) {
+      const found = notesWithFiles.find(
+        (n) =>
+          /\.(xlsx|xls|csv)$/i.test(n.fileInfo?.originalName || '') ||
+          (n.fileInfo?.mimeType || '').includes('spreadsheet') ||
+          (n.fileInfo?.mimeType || '').includes('excel')
+      );
+      if (found) return found;
+    }
+    if (/\b(word|docx|doc)\b/i.test(qLower)) {
+      const found = notesWithFiles.find(
+        (n) =>
+          /\.(docx|doc)$/i.test(n.fileInfo?.originalName || '') ||
+          (n.fileInfo?.mimeType || '').includes('word')
+      );
+      if (found) return found;
+    }
+    if (/\b(pdf)\b/i.test(qLower)) {
+      const found = notesWithFiles.find(
+        (n) =>
+          /\.pdf$/i.test(n.fileInfo?.originalName || '') ||
+          (n.fileInfo?.mimeType || '').includes('pdf')
+      );
+      if (found) return found;
+    }
+    if (/\b(foto|gambar|image|photo)\b/i.test(qLower)) {
+      const found = notesWithFiles.find(
+        (n) => n.fileInfo?.mediaType === 'image' || (n.fileInfo?.mimeType || '').startsWith('image/')
+      );
+      if (found) return found;
+    }
+  }
+
+  // 5. If user explicitly asks "kirim kesini", "kirimin", "mana filenya", "lihat dong" and there is a saved file, return the most recent one
+  if (
+    /\b(kirim\s+ke\s*sini|kirimin|kirimkan|kirim\s+itu|kirim\s+lagi|mana\s+file|mana\s+foto|minta\s+file|minta\s+foto|bagi\s+file)\b/i.test(
+      qLower
+    )
+  ) {
+    return notesWithFiles[0];
+  }
+
+  return null;
 }
 
 export function formatNotesListText(groupId) {
   const notes = getSavedNotesForGroup(groupId);
   if (notes.length === 0) {
-    return '📭 *Belum ada catatan atau file penting yang di-save di grup ini.*\n\nUntuk menyimpan catatan/jadwal/file (.docx, .xlsx, .pdf, foto), ketik:\n`@bot tolong save kan jadwal ini ya: ...`\natau reply sebuah pesan/file lalu ketik `@bot tolong savekan ini ya`.';
+    return '📭 *Belum ada catatan atau file yang disimpan di grup ini.*\n\nContoh cara menyimpan:\n• Kirim/reply file atau foto lalu ketik: `ai tolong save file ini judulnya jadwal nandar`\n• Atau ketik: `ai tolong save jadwal rapat senin jam 9`';
   }
 
   let out = `📋 *DAFTAR CATATAN & FILE TERSIMPAN (${notes.length} Item)*\n\n`;
   for (const n of notes) {
     let fileLabel = '';
     if (n.fileInfo?.originalName) {
-      const storageTag = n.fileInfo.driveFileId ? '☁️ Google Drive' : '💾 Server';
-      fileLabel = `\n   📎 _File (${storageTag}): ${n.fileInfo.originalName}_`;
+      const jenis = n.fileInfo.mediaType === 'image' ? '🖼️ Foto' : '📎 Dokumen';
+      fileLabel = ` _(${jenis})_`;
     }
-    out += `*#${n.id}* — *${n.title}*\n`;
-    out += `   📝 ${n.content}${fileLabel}\n`;
-    out += `   👤 _Disimpan oleh ${n.savedBy} (${n.formattedTime})_\n\n`;
+    out += `*#${n.id}* — *${n.title}*${fileLabel}\n`;
+    if (n.content && n.content.toLowerCase() !== n.title.toLowerCase()) {
+      out += `   📝 ${n.content}\n`;
+    }
+    out += `   👤 _Oleh ${n.savedBy} (${n.formattedTime})_\n\n`;
   }
-  out += `💡 _Tips:_\n- Ketik \`@bot kirim file #ID\` untuk meminta bot mengirim ulang file/foto.\n- Ketik \`@bot hapus catatan #ID\` atau \`@bot hapus catatan tersebut\` untuk menghapus.`;
+  out += `💡 _Ketik nama catatan (misal: "ai minta jadwal nandar") untuk meminta bot mengirim filenya, atau "ai hapus catatan #ID" untuk menghapus._`;
   return out;
 }
 
@@ -348,7 +473,7 @@ export function parseNoteCommand(questionText = '', quotedText = '', hasMedia = 
 
   // 1. Check LIST NOTES command
   const listRegex = new RegExp(
-    `^\\s*(?:tolong\\s+|coba\\s+)?(?:list|daftar|lihat|cek|tampilkan|show)\\s+${noteWord}\\b|\\b(?:list|daftar)\\s+${noteWord}\\b`,
+    `^\\s*(?:tolong\\s+|coba\\s+)?(?:list|daftar|lihat\\s+semua|cek\\s+semua|tampilkan\\s+semua|show)\\s+${noteWord}\\b|\\b(?:list|daftar)\\s+${noteWord}\\b`,
     'i'
   );
   if (listRegex.test(lower)) {
@@ -359,7 +484,7 @@ export function parseNoteCommand(questionText = '', quotedText = '', hasMedia = 
 
   // 2. Check DELETE command
   const deleteRegex = new RegExp(
-    `\\b(hapus|hapuskan|delete|buang|hilangkan)\\b.*\\b(${noteWord}|jadwal|save|simpanan|#\\d+)\\b|\\b(hapus|delete)\\s+#?\\d+\\b`,
+    `\\b(hapus|hapuskan|delete|buang|hilangkan)\\b.*\\b(${noteWord}|jadwal|save|simpanan|#\\d+|ini|itu|tersebut|tadi)\\b|\\b(hapus|delete)\\s+#?\\d+\\b`,
     'i'
   );
   if (deleteRegex.test(lower)) {
@@ -372,56 +497,54 @@ export function parseNoteCommand(questionText = '', quotedText = '', hasMedia = 
   // 3. Check SAVE command
   const isQuestionAboutSaved =
     new RegExp(
-      `\\b(apa\\s+aja|apa\\s+saja|mana\\s+aja|lihat|tampilkan|cek|cari|carikan|tanya|kapan|berapa|siapa|kirim|kirimin|kirimkan|minta|ambil|ambilkan)\\b.*\\b(yang\\s+di\\s*save|yang\\s+disimpan|udah\\s+di\\s*save|sudah\\s+disimpan|${noteWord}|jadwal)\\b`,
+      `\\b(apa\\s+aja|apa\\s+saja|mana\\s+aja|lihat|tampilkan|cek|cari|carikan|tanya|kapan|berapa|siapa|kirim|kirimin|kirimkan|kesini|minta|ambil|ambilkan)\\b`,
       'i'
     ).test(lower) &&
-    !/\b(tolong\s+save|save\s*kan|simpan\s*kan|tolong\s+simpan|tolong\s+catat)\b/i.test(lower);
+    !/\b(tolong\s+(?:bantu\s+)?save|save\s*kan|simpan\s*kan|tolong\s+(?:bantu\s+)?simpan|tolong\s+(?:bantu\s+)?catat|save\s+file|simpan\s+file|save\s+foto|simpan\s+foto)\b/i.test(
+      lower
+    );
 
   if (isQuestionAboutSaved) {
     return { action: 'none' };
   }
 
   const saveRegex = new RegExp(
-    `\\b(tolong\\s+save(?:kan)?|save\\s*kan|save\\s+ini|save\\s+chat|save\\s+jadwal|save\\s+${noteWord}|save\\s+pesan|simpan(?:kan)?\\s+(?:ini|chat|jadwal|pesan|${noteWord})|tolong\\s+simpan(?:kan)?|tolong\\s+catat(?:kan)?|catat(?:kan)?\\s+(?:ini|jadwal|pesan|chat)|masuk(?:in|kan)\\s+ke\\s+${noteWord})\\b`,
+    `\\b(tolong\\s+(?:bantu\\s+)?save(?:kan)?|bantu\\s+save(?:kan)?|save\\s*kan|save\\s+ini|save\\s+chat|save\\s+jadwal|save\\s+${noteWord}|save\\s+pesan|simpan(?:kan)?\\s+(?:ini|chat|jadwal|pesan|${noteWord})|tolong\\s+(?:bantu\\s+)?simpan(?:kan)?|tolong\\s+(?:bantu\\s+)?catat(?:kan)?|catat(?:kan)?\\s+(?:ini|jadwal|pesan|chat)|masuk(?:in|kan)\\s+ke\\s+${noteWord})\\b`,
     'i'
   );
 
   const startsWithSave = /^(save|simpan|catat)\b[\s:,-]*/i.test(lower);
 
   if (saveRegex.test(lower) || startsWithSave) {
-    let extractedNote = text
-      .replace(
-        new RegExp(
-          `^(tolong\\s+)?(save\\s*kan|save|simpan\\s*kan|simpan|catat\\s*kan|catat)\\s*(jadwal\\s+ini|chat\\s+ini|pesan\\s+ini|${noteWord}\\s+ini|ini)?\\s*(ya|dong|deh|nih|bot)?[\\s:,-]*`,
-          'i'
-        ),
-        ''
-      )
-      .replace(
-        /\s*(nanti\s+(kalo|kalau)?\s*(saya|aku|kita)\s+(butuh|tanya|perlu|minta|panggil).*)$/i,
-        ''
-      )
+    const cleanTitle = cleanRealisticNoteTitle(text);
+
+    // Clean quotedText from bot's greeting if user replied to a message
+    let cleanQuoted = String(quotedText || '')
+      .replace(/^Halo[^!\n]*!\s*Saya\s+[a-zA-Z0-9_-]+\s+siap\s+membantu\.?\s*/i, '')
       .trim();
 
-    let finalContent = '';
-    if (quotedText && quotedText.trim()) {
-      if (
-        extractedNote &&
-        extractedNote.length > 3 &&
-        !/^(ya|dong|nanti.*|tolong.*)$/i.test(extractedNote)
-      ) {
-        finalContent = `${quotedText.trim()}\n(Catatan tambahan: ${extractedNote})`;
+    let finalTitle = cleanTitle;
+    let finalContent = cleanTitle;
+
+    if (cleanQuoted && !hasMedia) {
+      // If user replied to a text message and gave a custom title (e.g. "save ini judulnya jadwal nandar")
+      if (cleanTitle && cleanTitle !== 'Catatan Penting' && cleanTitle.length >= 2) {
+        finalTitle = cleanTitle;
+        finalContent = cleanQuoted;
       } else {
-        finalContent = quotedText.trim();
+        finalTitle = cleanRealisticNoteTitle(cleanQuoted);
+        finalContent = cleanQuoted;
       }
-    } else {
-      finalContent = extractedNote || text;
+    } else if (hasMedia) {
+      finalTitle = cleanTitle;
+      finalContent = cleanTitle;
     }
 
     if (finalContent || hasMedia) {
       return {
         action: 'save',
-        contentToSave: finalContent || '(Lampiran File / Foto Penting)'
+        titleToSave: finalTitle || 'Catatan Penting',
+        contentToSave: finalContent || finalTitle || 'Lampiran File'
       };
     }
   }

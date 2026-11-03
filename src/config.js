@@ -86,7 +86,7 @@ const DEFAULT_CONFIG = {
   searchMatchLimit: 40,
   replyOnMention: true,
   replyOnQuoteBot: true,
-  customPrefixes: ['@bot', '!ai', '/ai'],
+  customPrefixes: ['@bot', '!ai', '/ai', 'ai'],
   allowedGroups: [],
   allowPrivateChat: false,
   systemPrompt: `Kamu adalah asisten AI pintar di dalam grup WhatsApp.
@@ -123,6 +123,13 @@ export function loadConfig() {
         parsed.systemPrompt.includes('misalnya info cuaca saat ini')
       ) {
         parsed.systemPrompt = DEFAULT_CONFIG.systemPrompt;
+      }
+
+      if (Array.isArray(parsed.customPrefixes)) {
+        parsed.customPrefixes = parsed.customPrefixes
+          .flatMap((p) => String(p || '').split(/[,;\s]+/))
+          .map((p) => p.trim())
+          .filter(Boolean);
       }
 
       currentConfig = {

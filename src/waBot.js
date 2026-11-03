@@ -195,7 +195,7 @@ async function downloadRawMediaBuffer(messageWrapper) {
  * Downloads media from WhatsApp, uploads to Google Drive if configured (and deletes local temporary buffer),
  * or stores in local data/saved_docs/ if Google Drive is not configured.
  */
-async function downloadAndSaveMedia(messageWrapper, mediaInfo) {
+async function downloadAndSaveMedia(messageWrapper, mediaInfo, customTitle = '') {
   if (!messageWrapper || !mediaInfo) return null;
 
   if (mediaInfo.fileLength && mediaInfo.fileLength > MAX_FILE_SIZE_BYTES) {
@@ -218,7 +218,20 @@ async function downloadAndSaveMedia(messageWrapper, mediaInfo) {
   }
 
   const config = getConfig();
-  const safeOriginal = String(mediaInfo.originalName || 'file')
+  const extMatch = String(mediaInfo.originalName || '').match(/(\.[a-zA-Z0-9]{2,5})$/);
+  const ext = extMatch ? extMatch[1] : mediaInfo.mediaType === 'image' ? '.jpg' : '';
+
+  // If user specified a realistic title (e.g. "jadwal dinas Nandar"), use it for the file name too!
+  let displayFileName = mediaInfo.originalName || `file${ext}`;
+  if (
+    customTitle &&
+    customTitle !== 'Catatan Penting' &&
+    (/^foto-\d+/i.test(displayFileName) || /^dokumen-\d+/i.test(displayFileName))
+  ) {
+    displayFileName = `${customTitle}${ext}`;
+  }
+
+  const safeOriginal = String(displayFileName)
     .replace(/[^a-zA-Z0-9._-]/g, '_')
     .slice(-80);
   const tempFileName = `${Date.now()}-${safeOriginal}`;
@@ -232,7 +245,7 @@ async function downloadAndSaveMedia(messageWrapper, mediaInfo) {
     try {
       const driveResult = await uploadBufferToGoogleDrive({
         buffer,
-        fileName: mediaInfo.originalName || tempFileName,
+        fileName: displayFileName,
         mimeType: mediaInfo.mimeType
       });
 
@@ -246,7 +259,7 @@ async function downloadAndSaveMedia(messageWrapper, mediaInfo) {
 
         return {
           mediaType: mediaInfo.mediaType || 'document',
-          originalName: mediaInfo.originalName || tempFileName,
+          originalName: displayFileName,
           mimeType: mediaInfo.mimeType,
           sizeBytes: buffer.length,
           storage: 'gdrive',
@@ -264,7 +277,7 @@ async function downloadAndSaveMedia(messageWrapper, mediaInfo) {
 
   return {
     mediaType: mediaInfo.mediaType || 'document',
-    originalName: mediaInfo.originalName || tempFileName,
+    originalName: displayFileName,
     mimeType: mediaInfo.mimeType,
     sizeBytes: buffer.length,
     storage: 'local',
@@ -346,13 +359,17 @@ function checkBotTrigger(text, contextInfo) {
     }
   }
 
-  // 3. Check custom prefixes (e.g. @bot, !ai, /ai)
+  // 3. Check custom prefixes (e.g. @bot, !ai, /ai, ai)
   let matchedPrefix = null;
-  const prefixes = Array.isArray(config.customPrefixes) ? config.customPrefixes : ['@bot', '!ai', '/ai'];
+  const rawPrefixes = Array.isArray(config.customPrefixes)
+    ? config.customPrefixes
+    : ['@bot', '!ai', '/ai', 'ai'];
+  const prefixes = rawPrefixes
+    .flatMap((item) => String(item || '').split(/[,;\s]+/))
+    .map((p) => p.trim().toLowerCase())
+    .filter(Boolean);
   const lowerText = text.toLowerCase();
-  for (const p of prefixes) {
-    const cleanP = (p || '').trim().toLowerCase();
-    if (!cleanP) continue;
+  for (const cleanP of prefixes) {
     if (
       lowerText === cleanP ||
       lowerText.startsWith(`${cleanP} `) ||
@@ -761,7 +778,7 @@ export async function startWhatsAppBot() {
           } else if (noteCmd.action === 'save') {
             let savedFileInfo = null;
             if (mediaInfo) {
-              savedFileInfo = await downloadAndSaveMedia(msg, mediaInfo);
+              savedFileInfo = await downloadAndSaveMedia(msg, mediaInfo, noteCmd.titleToSave);
             } else if (quotedMediaInfo && quotedUnwrapped) {
               const fakeQuotedMsg = {
                 key: {
@@ -771,35 +788,29 @@ export async function startWhatsAppBot() {
                 },
                 message: quotedUnwrapped
               };
-              savedFileInfo = await downloadAndSaveMedia(fakeQuotedMsg, quotedMediaInfo);
+              savedFileInfo = await downloadAndSaveMedia(
+                fakeQuotedMsg,
+                quotedMediaInfo,
+                noteCmd.titleToSave
+              );
             }
 
             const savedNote = addSavedNote({
               groupId: isGroup ? remoteJid : 'global',
               groupName: isGroup ? groupName : 'Chat Pribadi',
+              title: noteCmd.titleToSave,
               content: noteCmd.contentToSave,
               savedBy: senderName,
               originalSender: quotedText ? quotedSender || senderName : senderName,
               fileInfo: savedFileInfo
             });
 
-            const storageLoc = savedFileInfo
-              ? savedFileInfo.driveFileId
-                ? `Google Drive (File lokal sementara sudah dihapus otomatis)`
-                : `Server Lokal`
-              : '';
-
-            noteActionInfo = `BERHASIL DISIMPAN PERMANEN:
-- ID Catatan: #${savedNote.id}
-- Kategori: ${savedNote.category.toUpperCase()}
-- Judul: ${savedNote.title}
-- Isi yang disimpan: "${savedNote.content}"
-${savedFileInfo ? `- File Tersimpan: "${savedFileInfo.originalName}" di ${storageLoc}` : ''}`;
+            noteActionInfo = `Catatan/file baru saja disimpan dengan nama "${savedNote.title}". Cukup konfirmasikan secara singkat, luwes, dan natural bahwa sudah disimpan dengan nama *${savedNote.title}* (contoh: "Siap ${senderName}, sudah saya simpan dengan nama *${savedNote.title}* ya! ✅"). Jangan gunakan kalimat kaku seperti "sudah berhasil dilakukan oleh sistem" atau "📌 Catatan:".`;
 
             addActivityLog(
               'save',
-              `📌 Item Permanen #${savedNote.id} Disimpan (${groupName})`,
-              `${savedNote.title} — oleh ${senderName}`
+              `📌 Disimpan #${savedNote.id}: ${savedNote.title} (${groupName})`,
+              `Oleh ${senderName}`
             );
             emitStatusUpdate();
           } else if (noteCmd.action === 'delete') {
@@ -809,25 +820,28 @@ ${savedFileInfo ? `- File Tersimpan: "${savedFileInfo.originalName}" di ${storag
               quotedText
             );
             if (deletedNote) {
-              noteActionInfo = `BERHASIL DIHAPUS DARI PENYIMPANAN PERMANEN${
-                deletedNote.fileInfo?.driveFileId ? ' & GOOGLE DRIVE' : ''
-              }:
-- ID Catatan yang dihapus: #${deletedNote.id}
-- Judul: ${deletedNote.title}
-- Isi: "${deletedNote.content}"`;
+              noteActionInfo = `Catatan/file dengan nama "${deletedNote.title}" (#${deletedNote.id}) sudah berhasil dihapus. Sampaikan secara singkat dan natural bahwa *${deletedNote.title}* sudah dihapus.`;
               addActivityLog(
                 'info',
-                `🗑️ Item Permanen #${deletedNote.id} Dihapus (${groupName})`,
-                `Dihapus oleh ${senderName}: ${deletedNote.title}`
+                `🗑️ Dihapus #${deletedNote.id}: ${deletedNote.title} (${groupName})`,
+                `Dihapus oleh ${senderName}`
               );
               emitStatusUpdate();
             } else {
-              noteActionInfo = `GAGAL MENGHAPUS: Tidak ditemukan catatan/file permanen yang cocok dengan perintah "${noteCmd.targetQuery}". Sebutkan daftar catatan yang ada saat ini agar pengguna bisa memilih ID # yang ingin dihapus.`;
+              noteActionInfo = `GAGAL MENGHAPUS: Tidak ditemukan catatan/file yang cocok dengan perintah "${noteCmd.targetQuery}". Sebutkan daftar catatan yang ada saat ini agar pengguna bisa memilih nama atau #ID yang ingin dihapus.`;
             }
           }
 
           // ==========================================================
-          // C. GENERATE AI REPLY (WITH WEATHER, WEB INFO, SAVED NOTES & CHAT HISTORY)
+          // C. CHECK IF USER IS ASKING ABOUT / REQUESTING A SAVED FILE/PHOTO
+          // ==========================================================
+          let targetFileNote =
+            noteCmd.action === 'none'
+              ? findSavedFileNoteToSend(isGroup ? remoteJid : 'global', question, quotedText)
+              : null;
+
+          // ==========================================================
+          // D. GENERATE AI REPLY (WITH WEATHER, WEB INFO, SAVED NOTES & CHAT HISTORY)
           // ==========================================================
           const aiReply = await generateGroupAIReply({
             groupId: isGroup ? remoteJid : null,
@@ -837,77 +851,90 @@ ${savedFileInfo ? `- File Tersimpan: "${savedFileInfo.originalName}" di ${storag
             quotedText,
             quotedSender,
             noteActionInfo,
+            sendingFileNote: targetFileNote,
             onFallbackLog: (fallbackMsg) => {
               addActivityLog('info', '🔄 Auto-Fallback Model AI', fallbackMsg);
             }
           });
 
-          const sentMsg = await sock.sendMessage(
-            remoteJid,
-            { text: aiReply },
-            { quoted: msg }
-          );
-
-          // ==========================================================
-          // D. SEND SAVED FILE (.docx, .xlsx, .pdf, Photo) BACK IF REQUESTED
-          // ==========================================================
-          const isRequestingSavedFile =
-            noteCmd.action === 'none' &&
-            /\b(kirim|kirimin|kirimkan|send|unduh|download|minta|ambil|ambilkan|mana|lihat)\b.*\b(dokumen|file|berkas|pdf|docx|word|excel|xlsx|xls|csv|foto|gambar|lampiran|#\d+)\b/i.test(
-              question
+          // If AI's reply itself mentions a saved file note, also attach that file!
+          if (!targetFileNote && noteCmd.action === 'none') {
+            targetFileNote = findSavedFileNoteToSend(
+              isGroup ? remoteJid : 'global',
+              question,
+              quotedText,
+              aiReply
             );
+          }
 
-          if (isRequestingSavedFile) {
-            const targetNote = findSavedFileNoteToSend(isGroup ? remoteJid : 'global', question);
-            if (targetNote && targetNote.fileInfo) {
-              try {
-                let fileBuffer = null;
-                if (targetNote.fileInfo.driveFileId) {
-                  fileBuffer = await downloadBufferFromGoogleDrive(targetNote.fileInfo.driveFileId);
-                } else if (targetNote.fileInfo.savedFileName) {
-                  const localPath = path.join(SAVED_DOCS_DIR, targetNote.fileInfo.savedFileName);
-                  if (fs.existsSync(localPath)) {
-                    fileBuffer = fs.readFileSync(localPath);
-                  }
+          let sentMsg = null;
+
+          // If a matching saved file/photo note was found, send the actual file/photo directly!
+          if (targetFileNote && targetFileNote.fileInfo) {
+            try {
+              let fileBuffer = null;
+              if (targetFileNote.fileInfo.driveFileId) {
+                fileBuffer = await downloadBufferFromGoogleDrive(targetFileNote.fileInfo.driveFileId);
+              } else if (targetFileNote.fileInfo.savedFileName) {
+                const localPath = path.join(SAVED_DOCS_DIR, targetFileNote.fileInfo.savedFileName);
+                if (fs.existsSync(localPath)) {
+                  fileBuffer = fs.readFileSync(localPath);
                 }
+              }
 
-                if (fileBuffer) {
-                  const isImg =
-                    targetNote.fileInfo.mediaType === 'image' ||
-                    (targetNote.fileInfo.mimeType || '').startsWith('image/');
-                  const captionText = `📎 *#${targetNote.id} — ${targetNote.title}*\nDisimpan oleh: ${targetNote.savedBy}`;
+              if (fileBuffer) {
+                const isImg =
+                  targetFileNote.fileInfo.mediaType === 'image' ||
+                  (targetFileNote.fileInfo.mimeType || '').startsWith('image/');
 
-                  if (isImg) {
-                    await sock.sendMessage(
-                      remoteJid,
-                      {
-                        image: fileBuffer,
-                        caption: captionText
-                      },
-                      { quoted: msg }
-                    );
-                  } else {
-                    await sock.sendMessage(
-                      remoteJid,
-                      {
-                        document: fileBuffer,
-                        mimetype: targetNote.fileInfo.mimeType || 'application/octet-stream',
-                        fileName: targetNote.fileInfo.originalName || 'dokumen',
-                        caption: captionText
-                      },
-                      { quoted: msg }
-                    );
-                  }
-                  addActivityLog(
-                    'reply',
-                    `📤 Mengirim Ulang File #${targetNote.id} (${groupName})`,
-                    targetNote.fileInfo.originalName
+                if (isImg) {
+                  sentMsg = await sock.sendMessage(
+                    remoteJid,
+                    {
+                      image: fileBuffer,
+                      caption: aiReply
+                    },
+                    { quoted: msg }
+                  );
+                } else {
+                  const extMatch = String(targetFileNote.fileInfo.originalName || '').match(
+                    /(\.[a-zA-Z0-9]{2,5})$/
+                  );
+                  const ext = extMatch ? extMatch[1] : '';
+                  const niceFileName =
+                    targetFileNote.title && !targetFileNote.title.endsWith(ext)
+                      ? `${targetFileNote.title}${ext}`
+                      : targetFileNote.fileInfo.originalName || 'dokumen';
+
+                  sentMsg = await sock.sendMessage(
+                    remoteJid,
+                    {
+                      document: fileBuffer,
+                      mimetype: targetFileNote.fileInfo.mimeType || 'application/octet-stream',
+                      fileName: niceFileName,
+                      caption: aiReply
+                    },
+                    { quoted: msg }
                   );
                 }
-              } catch (sendFileErr) {
-                console.error('[WABot] Gagal mengirim ulang file tersimpan:', sendFileErr.message);
+
+                addActivityLog(
+                  'reply',
+                  `📤 Mengirim File "${targetFileNote.title}" (${groupName})`,
+                  targetFileNote.fileInfo.originalName
+                );
               }
+            } catch (sendFileErr) {
+              console.error('[WABot] Gagal mengirim ulang file tersimpan:', sendFileErr.message);
             }
+          }
+
+          if (!sentMsg) {
+            sentMsg = await sock.sendMessage(
+              remoteJid,
+              { text: aiReply },
+              { quoted: msg }
+            );
           }
 
           // Store the bot's reply in the temporary group chat history too
